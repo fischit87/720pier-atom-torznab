@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 import threading
@@ -31,6 +32,7 @@ CACHE_SECONDS = max(0, int(os.getenv("CACHE_SECONDS", "300")))
 REQUEST_TIMEOUT = max(1, int(os.getenv("REQUEST_TIMEOUT", "20")))
 USER_AGENT = os.getenv("USER_AGENT", "720pier-torznab-adapter/1.0")
 IGNORED_SEARCH_TERMS = {"vs", "v", "at"}
+logger = logging.getLogger("720pier-adapter")
 
 
 @dataclass(frozen=True)
@@ -202,6 +204,15 @@ def resolve_item(item: FeedItem) -> FeedItem:
     return resolved
 
 
+def resolve_item_safe(item: FeedItem) -> FeedItem:
+    """A single slow topic must not fail the complete Torznab search."""
+    try:
+        return resolve_item(item)
+    except HTTPException as exc:
+        logger.warning("Could not resolve topic %s: %s", item.details_url, exc.detail)
+        return item
+
+
 def _terms(value: str) -> list[str]:
     return [term for term in re.findall(r"[^\W_]+", value.casefold()) if term not in IGNORED_SEARCH_TERMS]
 
@@ -285,7 +296,7 @@ def api(
     page_limit = _safe_int(limit, 100, 1, 100)
     page = selected[page_offset:page_offset + page_limit]
     with ThreadPoolExecutor(max_workers=4) as pool:
-        resolved = list(pool.map(resolve_item, page))
+        resolved = list(pool.map(resolve_item_safe, page))
     return Response(_rss(resolved, page_offset, len(selected)), media_type="application/xml")
 
 
