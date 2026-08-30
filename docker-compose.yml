@@ -6,6 +6,7 @@ services:
       - .env
     environment:
       FEED_URL: https://720pier.ru/feed/forum/43
+      FORUM_URL: https://720pier.ru/viewforum.php?f=43
       BASE_URL: http://192.168.0.99:8788
       CACHE_SECONDS: "300"
       REQUEST_TIMEOUT: "20"
