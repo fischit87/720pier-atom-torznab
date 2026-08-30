@@ -1,0 +1,16 @@
+services:
+  pier720-torznab:
+    build: .
+    container_name: pier720-torznab
+    env_file:
+      - .env
+    environment:
+      FEED_URL: https://720pier.ru/feed/forum/43
+      BASE_URL: http://192.168.0.99:8788
+      CACHE_SECONDS: "300"
+      REQUEST_TIMEOUT: "20"
+    ports:
+      - "8788:8000"
+    restart: unless-stopped
+    mem_limit: 128m
+
