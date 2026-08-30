@@ -14,4 +14,3 @@ services:
       - "8788:8000"
     restart: unless-stopped
     mem_limit: 128m
-
