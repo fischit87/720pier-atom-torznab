@@ -25,6 +25,7 @@ TORZNAB = "http://torznab.com/schemas/2015/feed"
 ET.register_namespace("torznab", TORZNAB)
 
 FEED_URL = os.getenv("FEED_URL", "https://720pier.ru/feed/forum/43")
+FORUM_URL = os.getenv("FORUM_URL", "https://720pier.ru/viewforum.php?f=43")
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8788").rstrip("/")
 API_KEY = os.getenv("API_KEY", "")
 PIER_COOKIE = os.getenv("PIER_COOKIE", "")
@@ -162,11 +163,104 @@ class _TorrentRowParser(HTMLParser):
             self.in_row = False
 
 
+class _ForumParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.in_topic = False
+        self.topic_depth = 0
+        self.capture_title = False
+        self.capture_seeders = False
+        self.capture_peers = False
+        self.href = ""
+        self.title_parts: list[str] = []
+        self.text_parts: list[str] = []
+        self.seeders = 0
+        self.peers = 0
+        self.rows: list[tuple[str, str, int, int, int]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        classes = set((values.get("class") or "").split())
+        if tag == "li" and "row" in classes:
+            if not self.in_topic:
+                self.in_topic, self.topic_depth = True, 1
+                self.href, self.title_parts, self.text_parts = "", [], []
+                self.seeders, self.peers = 0, 0
+            else:
+                self.topic_depth += 1
+        if not self.in_topic:
+            return
+        if tag == "a" and "topictitle" in classes:
+            self.href = values.get("href") or ""
+            self.capture_title = True
+        if tag == "span" and "seed" in classes and not self.seeders:
+            self.capture_seeders = True
+        if tag == "span" and "leech" in classes and not self.peers:
+            self.capture_peers = True
+
+    def handle_data(self, data: str) -> None:
+        if not self.in_topic:
+            return
+        value = data.strip()
+        if value:
+            self.text_parts.append(value)
+        if self.capture_title and value:
+            self.title_parts.append(value)
+        if self.capture_seeders and value.isdigit():
+            self.seeders = int(value)
+        if self.capture_peers and value.isdigit():
+            self.peers = int(value)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a":
+            self.capture_title = False
+        if tag == "span":
+            self.capture_seeders = self.capture_peers = False
+        if tag != "li" or not self.in_topic:
+            return
+        self.topic_depth -= 1
+        if self.topic_depth:
+            return
+        title = " ".join(self.title_parts).strip()
+        text = " ".join(self.text_parts)
+        size_match = re.search(r"(\d+(?:[.,]\d+)?)\s*(GiB|MiB)", text, re.I)
+        size = 0
+        if size_match:
+            factor = 1024**3 if size_match.group(2).casefold() == "gib" else 1024**2
+            size = int(float(size_match.group(1).replace(",", ".")) * factor)
+        if self.href and re.match(r"^NFL\s+\d{4}", title, re.I):
+            self.rows.append((self.href, title, size, self.seeders, self.peers))
+        self.in_topic = False
+
+
+def parse_forum(html_data: bytes | str) -> list[FeedItem]:
+    parser = _ForumParser()
+    parser.feed(html_data.decode("utf-8", errors="replace") if isinstance(html_data, bytes) else html_data)
+    items: list[FeedItem] = []
+    now = format_datetime(datetime.now(timezone.utc))
+    for href, title, size, seeders, peers in parser.rows:
+        details_url = urljoin(FORUM_URL, href)
+        item_id = hashlib.sha256(details_url.encode()).hexdigest()[:24]
+        items.append(FeedItem(
+            item_id=item_id,
+            title=title,
+            guid=details_url,
+            details_url=details_url,
+            published=now,
+            attachment_name=f"720pier-{item_id}.torrent",
+            download_url="pending",
+            size=size,
+            seeders=seeders,
+            peers=peers,
+        ))
+    return items
+
+
 def parse_topic(html_data: bytes | str, item: FeedItem) -> FeedItem:
     parser = _TorrentRowParser()
     parser.feed(html_data.decode("utf-8", errors="replace") if isinstance(html_data, bytes) else html_data)
     if not parser.result:
-        return item
+        return replace(item, download_url=None)
     raw_download, size_title, row_text = parser.result
     download_url = urljoin(item.details_url, raw_download)
     exact_size = 0
@@ -190,13 +284,13 @@ def fetch_feed() -> list[FeedItem]:
     with _feed_lock:
         if _feed_items and now - _feed_time < CACHE_SECONDS:
             return list(_feed_items)
-        data, _ = _fetch(FEED_URL)
+        data, _ = _fetch(FORUM_URL)
         try:
-            parsed = parse_feed(data)
-        except ET.ParseError as exc:
+            parsed = parse_forum(data)
+        except Exception as exc:
             if _feed_items:
                 return list(_feed_items)
-            raise HTTPException(status_code=502, detail=f"Invalid 720pier feed: {exc}") from exc
+            raise HTTPException(status_code=502, detail=f"Invalid 720pier forum page: {exc}") from exc
         _feed_items, _feed_time = parsed, now
         return list(parsed)
 
@@ -305,9 +399,7 @@ def api(
     page_offset = _safe_int(offset, 0, 0, 1_000_000)
     page_limit = _safe_int(limit, 100, 1, 100)
     page = selected[page_offset:page_offset + page_limit]
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        resolved = list(pool.map(resolve_item_safe, page))
-    return Response(_rss(resolved, page_offset, len(selected)), media_type="application/xml")
+    return Response(_rss(page, page_offset, len(selected)), media_type="application/xml")
 
 
 @app.get("/download/{item_id}")
