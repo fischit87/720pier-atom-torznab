@@ -30,7 +30,11 @@ API_KEY = os.getenv("API_KEY", "")
 PIER_COOKIE = os.getenv("PIER_COOKIE", "")
 CACHE_SECONDS = max(0, int(os.getenv("CACHE_SECONDS", "300")))
 REQUEST_TIMEOUT = max(1, int(os.getenv("REQUEST_TIMEOUT", "20")))
-USER_AGENT = os.getenv("USER_AGENT", "720pier-torznab-adapter/1.0")
+USER_AGENT = os.getenv(
+    "USER_AGENT",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+)
 IGNORED_SEARCH_TERMS = {"vs", "v", "at"}
 logger = logging.getLogger("720pier-adapter")
 
@@ -58,7 +62,12 @@ _detail_cache: dict[str, tuple[float, FeedItem]] = {}
 
 
 def _headers() -> dict[str, str]:
-    headers = {"User-Agent": USER_AGENT, "Accept": "application/xml,text/html,*/*"}
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "application/atom+xml,application/xml,text/html;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-GB,en;q=0.9,de;q=0.8",
+        "Connection": "close",
+    }
     if PIER_COOKIE:
         headers["Cookie"] = PIER_COOKIE
     return headers
@@ -70,6 +79,7 @@ def _fetch(url: str) -> tuple[bytes, str]:
         with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
             return response.read(), response.headers.get("Content-Type", "application/octet-stream")
     except (urllib.error.URLError, TimeoutError) as exc:
+        logger.warning("720pier request failed for %s: %s", url, exc)
         raise HTTPException(status_code=502, detail=f"720pier unavailable: {exc}") from exc
 
 
